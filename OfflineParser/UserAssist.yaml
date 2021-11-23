@@ -1,0 +1,57 @@
+name: Custom.OfflineParser.UserAssist
+description: |
+   Easily pull out offline amcache files for processing.
+
+# Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT
+type: SERVER
+
+precondition:
+    SELECT OS From info() where OS = 'windows' OR OS = 'linux' OR OS = 'darwin'
+
+sources:
+    - queries: 
+      
+        - LET cids = SELECT * from clients() where agent_information.name = "OfflineVelociraptor"
+              
+        - LET hive_paths = SELECT * from foreach(
+                row=cids,
+                query={
+                SELECT *, os_info.hostname as host from glob(globs='/opt/velociraptor/clients/' + client_id + '/collections/**/NTUSER.DAT')
+                }
+            )
+        
+        - LET UserAssistParse = 
+            SELECT parse_string_with_regex(
+                        string=url(parse=FullPath).Fragment,
+                        regex='''^.+Count\\"?(?P<Name>.+?)"?$''') AS Name, 
+                   FullPath,
+                   parse_binary(
+                        filename=Data.value,
+                        accessor="data",
+                        profile='''[["Header", 0, [["NumberOfExecutions", 4, "uint32"],["LastExecution", 60, "uint64"]]]]''',
+                        struct="Header") As ParsedUserAssist,
+                   parse_string_with_regex(
+                        string=FullPath,
+                        regex="Users/(?P<User>[^/]+)/NTUSER").User AS User
+            FROM glob(
+                    globs=url(scheme='file', 
+                    path=FullPath,
+                    fragment='''Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist\*\Count\*''').String,
+                    accessor='raw_reg')
+        
+        - LET UserAssist = SELECT * FROM foreach (
+                            row=hive_paths,
+                            query={
+                                SELECT  host as Host,
+                                        User,
+                                        if(condition=Name.Name,
+                                            then=rot13(string=Name.Name),
+                                            else=url(parse=FullPath).Fragment) AS Name,
+                                       timestamp(winfiletime=ParsedUserAssist.LastExecution) As LastExecution,
+                                       timestamp(winfiletime=ParsedUserAssist.LastExecution).Unix AS LastExecutionTS,
+                                       ParsedUserAssist.NumberOfExecutions AS NumberOfExecutions
+                                FROM UserAssistParse
+                            }
+                        )
+        
+        - SELECT * FROM UserAssist

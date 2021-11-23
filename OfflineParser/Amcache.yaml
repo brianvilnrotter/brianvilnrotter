@@ -1,0 +1,45 @@
+name: Custom.OfflineParser.Amcache
+description: |
+   Easily pull out offline amcache files for processing.
+
+# Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT
+type: SERVER
+
+precondition:
+    SELECT OS From info() where OS = 'windows' OR OS = 'linux' OR OS = 'darwin'
+
+sources:
+  - queries: 
+      
+      - LET cids = SELECT * from clients() where agent_information.name = "OfflineVelociraptor"
+      
+      - LET hive_paths = SELECT * from foreach(
+            row=cids,
+            query={
+                SELECT *, os_info.hostname as host from glob(globs='/opt/velociraptor/clients/' + client_id + '/collections/**/Amcache.hve')
+            }
+        )
+      
+      - LET amcache_parse(hive_path) =
+        SELECT * FROM foreach(
+            row=hive_paths,
+            query={
+                SELECT host as Host,
+                       FileId as SHA1,
+                       Key.Mtime as LastModified,
+                       LowerCaseLongPath as Filepath,
+                       Name,
+                       Size,
+                       ProductName,
+                       Publisher,
+                       Version,
+                       BinFileVersion
+                   
+                       from read_reg_key(
+                         globs=url(scheme='file', path=FullPath, 
+                         fragment='/Root/InventoryApplicationFile/*').String, 
+                         accessor='raw_reg')
+            }
+        )
+        
+      - SELECT * FROM amcache_parse(hive_path = {SELECT FullPath FROM hive_paths})
